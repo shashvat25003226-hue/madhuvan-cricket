@@ -25,17 +25,17 @@ Node.js **20+**, MongoDB Atlas, and optionally Google Gemini API and Resend. No 
 ```bash
 npm install
 cp .env.example .env
-# Edit .env: MONGODB_URI, SESSION_SECRET (>=32 chars), ADMIN_EMAIL
+# Edit .env: MONGODB_URI, SESSION_SECRET (>=32 chars), ADMIN_EMAIL, ADMIN_SETUP_CODE
 npm test
 npm run dev
 # Open http://localhost:3000
 ```
 
-The MongoDB URL belongs **only** in the server's `.env` or host environment secrets. Use `MONGODB_DB=madhuban_cricket` to keep club data separate. MongoDB user needs readWrite on that database. Set a strong `SESSION_SECRET` and designate the organizer with `ADMIN_EMAIL` **before** users register. Admin abilities follow an authenticated account with the matching email (email verification is not yet included; enable verified identity before any unrestricted public deployment).
+The MongoDB URL belongs **only** in the server's `.env` or host environment secrets. Use `MONGODB_DB=madhuban_cricket` to keep club data separate. MongoDB user needs readWrite on that database. Set a strong `SESSION_SECRET`, `ADMIN_EMAIL`, and `ADMIN_SETUP_CODE` before activating an organizer. An organizer must sign up using the exact ADMIN_EMAIL **and** explicitly activate the profile with the secret ADMIN_SETUP_CODE (at least 16 characters); a matching email alone never grants privileges. Email verification is available when Resend is configured, and opt-in email reminders require verification.
 
 ## Deploy to Node hosting (Render, Railway, VPS etc.)
 
-Create a **Node web service** with this repository, build command `npm install`, start command `npm start`, and Node 20+. Set `MONGODB_URI`, `SESSION_SECRET`, `ADMIN_EMAIL`, `PUBLIC_ORIGIN=https://your-host`, `NODE_ENV=production`, and optionally `GEMINI_API_KEY` / `RESEND_API_KEY` / `REMINDER_FROM_EMAIL` / `CRON_SECRET`. Add your host's outbound IP to Atlas Network Access, preferably narrowly scoped. TLS/HTTPS is required for secure session cookies.
+Create a **Node web service** with this repository, build command `npm install`, start command `npm start`, and Node 20+. Set `MONGODB_URI`, `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_SETUP_CODE`, `PUBLIC_ORIGIN=https://your-host`, `NODE_ENV=production`, and optionally `GEMINI_API_KEY` / `RESEND_API_KEY` / `REMINDER_FROM_EMAIL` / `CRON_SECRET`. Add your host's outbound IP to Atlas Network Access, preferably narrowly scoped. TLS/HTTPS is required for secure session cookies.
 
 ### Recurring Sunday fixture + reminder automation
 
@@ -51,13 +51,13 @@ Set `GEMINI_API_KEY` in your server environment, optionally `GEMINI_MODEL` (defa
 
 ## Security and limitations
 
-- Registered emails are not verified yet. Use trusted club members for the first rollout. For a public open launch, add email verification, password-reset flow, stronger abuse protection, monitoring and audit logs.
+- Verification links are available only after configuring Resend and a sender domain; unverified players can still access the app but cannot receive email reminders. For a public rollout, add password-reset flow, stronger abuse protection, monitoring and audit logs.
 - Team balancing uses player self-ratings and is a helpful starting point; it is not official selection. The organizer decides lineups.
 - Scoring supports common limited-overs cases; rare edge cases (DLS, super overs, penalty runs, retired hurt, complex run-out crossing rules, wides with run-outs, third-umpire decisions) are not fully modelled. Agree on how to score non-standard situations.
 - A registered player gets career metrics when the scorer chooses their exact player name from the list. Guest names are allowed but don't map to an account.
 - Weekly stats are based on the UTC Monday start; Sunday IST results are included but boundary hours may vary.
 - Password resets, photo uploads, video highlights, push notifications and payment functionality are not included in this release.
-- **Email reminders** require Resend setup and email verification is strongly recommended before activation.
+- **Email reminders** require Resend setup, player opt-in, and successful email verification before sending.
 - **No WhatsApp auto-messages:** the button opens a share composer; sending is a user action.
 - MongoDB credentials, Gemini key and email service secrets must never be committed. Keep `.env` ignored.
 
@@ -66,3 +66,21 @@ Set `GEMINI_API_KEY` in your server environment, optionally `GEMINI_MODEL` (defa
 `npm test` exercises delivery/extras and scorecard accounting. `node --check server.js && node --check public/app.js` checks syntax. For deployment, manually test registration, fixture RSVP, toss, every scoring case, innings finish, undo, leaderboard updates and mobile layout.
 
 **Brand credit:** Created by **Swastik Shukla**.
+
+
+## iPhone + Android install (PWA)
+
+Madhuban is a mobile-first installable Progressive Web App (not a native App Store release). The original 1024×1024 logo in `public/logo-original.png` is preserved byte-for-byte; generated icons are separate lossless PNGs.
+
+- **iPhone/iPad:** open the deployed HTTPS site in **Safari** → Share → **Add to Home Screen** → Add.
+- **Android:** open in Chrome → menu → **Install app** or **Add to Home screen**.
+- Internet is required for score changes, accounts, leaderboards, messaging and Gemini. Static shell has an offline fallback; no private API responses are cached.
+- iOS remote push messages are not available in this version; only in-app reminders and verified opt-in email reminders. WhatsApp invitations use the user's share composer (they are not auto-sent).
+
+## Firebase
+
+`public/firebase.js` uses the provided Firebase project config for **optional Google Analytics**, after player consent. Firebase public configuration is not a server-side secret. MongoDB remains the source of truth for accounts, matches and statistics; Firebase Auth, Firestore, Firebase Cloud Messaging and App Check are **not configured**. The analytics opt-in control is in the footer.
+
+## Club culture
+
+The homepage and footer thank the cricketers, friends and coaches who made childhood memorable, and include original motivational quotes. Developer credit **Swastik Shukla**, Instagram [@swastik_shukla__](https://www.instagram.com/swastik_shukla__/), and the [Madhuban WhatsApp group](https://chat.whatsapp.com/HNSGDgdGJVJGFnXEQfQNNk) are linked. Reference photographs from external fan edits are **not republished** without image rights.

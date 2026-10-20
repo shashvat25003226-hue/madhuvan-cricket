@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import {MongoClient,ObjectId} from 'mongodb';
-import {randomBytes,timingSafeEqual} from 'node:crypto';
+import {randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dirname,join} from 'node:path';
 import {uid,blankInnings,rollup,createDelivery,scorecard,resultText,allStats,nextSunday,balanceTeams} from './lib/cricket.js';
@@ -31,26 +31,52 @@ const publicPlayer=p=>p?{id:String(p._id),name:p.name,role:p.role,battingStyle:p
 const viewMatch=m=>{const {_id,...rest}=m;return {...rest,id:String(_id),result:resultText(m),scorecards:m.innings.map(scorecard)}};
 const viewFixture=f=>({...f,id:String(f._id),_id:undefined});
 const err=(res,e,status=400)=>res.status(status).json({error:e?.message||String(e)});
+const organizer=p=>!!p?.isAdmin && !!process.env.ADMIN_EMAIL && p.email===safeEmail(process.env.ADMIN_EMAIL);
 const asyncRoute=fn=>(req,res,next)=>Promise.resolve(fn(req,res,next)).catch(next);
 function token(p){return jwt.sign({sub:String(p._id)},process.env.SESSION_SECRET,{expiresIn:'14d',issuer:'madhuban-cricket',audience:'players'})}
 function setCookie(res,p){res.cookie('mc_session',token(p),{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production'||String(process.env.PUBLIC_ORIGIN||'').startsWith('https:'),path:'/',maxAge:14*86400*1000})}
 app.use(asyncRoute(async(req,res,next)=>{req.user=null;try{if(req.cookies.mc_session){const payload=jwt.verify(req.cookies.mc_session,process.env.SESSION_SECRET,{issuer:'madhuban-cricket',audience:'players'});if(oid(payload.sub)){const p=await players.findOne({_id:oid(payload.sub)});if(p)req.user=p;}}}catch{}next()}));
 function requireAuth(req,res,next){if(!req.user)return err(res,'Sign in first',401);next()}
-function requireAdmin(req,res,next){if(!req.user||req.user.email!==safeEmail(process.env.ADMIN_EMAIL))return err(res,'Organizer access required',403);next()}
+function requireAdmin(req,res,next){if(!organizer(req.user))return err(res,'Organizer access required',403);next()}
 function sameOrigin(req,res,next){const origin=req.get('origin');const host=`${req.protocol}://${req.get('host')}`;const allowed=process.env.PUBLIC_ORIGIN?.replace(/\/$/,'');if(origin&&origin!==host&&origin!==allowed)return err(res,'Cross-site request blocked',403);next()}
 app.use('/api', (req,res,next)=>['POST','PUT','PATCH','DELETE'].includes(req.method)?sameOrigin(req,res,next):next());
 app.post('/api/auth/register',authLimiter,asyncRoute(async(req,res)=>{
   const name=clean(req.body.name,60),email=safeEmail(req.body.email),password=String(req.body.password||'');
   if(name.length<2||!/^\S+@\S+\.\S+$/.test(email)||password.length<8||password.length>120)return err(res,'Enter a name, valid email, and password of at least 8 characters');
-  const hash=await bcrypt.hash(password,12);const doc={name,email,passwordHash:hash,role:'All-rounder',battingStyle:'Right-hand bat',bowlingStyle:'Right-arm medium',skill:3,bio:'',number:'',emailReminders:false,createdAt:now(),updatedAt:now()};
-  try{const r=await players.insertOne(doc);doc._id=r.insertedId;setCookie(res,doc);res.status(201).json({player:publicPlayer(doc),admin:email===safeEmail(process.env.ADMIN_EMAIL)})}catch(e){if(e.code===11000)return err(res,'Email is already registered',409);throw e}
+  const hash=await bcrypt.hash(password,12);const doc={name,email,passwordHash:hash,role:'All-rounder',battingStyle:'Right-hand bat',bowlingStyle:'Right-arm medium',skill:3,bio:'',number:'',emailReminders:false,isAdmin:false,emailVerifiedAt:null,createdAt:now(),updatedAt:now()};
+  try{const r=await players.insertOne(doc);doc._id=r.insertedId;setCookie(res,doc);res.status(201).json({player:publicPlayer(doc),admin:organizer(doc)})}catch(e){if(e.code===11000)return err(res,'Email is already registered',409);throw e}
 }));
 app.post('/api/auth/login',authLimiter,asyncRoute(async(req,res)=>{
   const p=await players.findOne({email:safeEmail(req.body.email)});if(!p||!await bcrypt.compare(String(req.body.password||''),p.passwordHash))return err(res,'Invalid email or password',401);
-  setCookie(res,p);res.json({player:publicPlayer(p),admin:p.email===safeEmail(process.env.ADMIN_EMAIL)});
+  setCookie(res,p);res.json({player:publicPlayer(p),admin:organizer(p)});
 }));
-app.post('/api/auth/logout',(req,res)=>{res.clearCookie('mc_session',{path:'/'});res.json({ok:true})});
-app.get('/api/me',(req,res)=>res.json({player:publicPlayer(req.user),admin:!!req.user&&req.user.email===safeEmail(process.env.ADMIN_EMAIL),emailReminders:!!req.user?.emailReminders}));
+app.post('/api/auth/email-verification',requireAuth,authLimiter,asyncRoute(async(req,res)=>{
+  if(req.user.emailVerifiedAt)return res.json({ok:true,message:'Email already verified'});
+  if(!process.env.RESEND_API_KEY||!process.env.REMINDER_FROM_EMAIL||!process.env.PUBLIC_ORIGIN)return err(res,'Email verification not configured by the organizer',503);
+  const issued=Date.now();if(req.user.emailVerifySentAt&&issued-new Date(req.user.emailVerifySentAt)<5*60000)return err(res,'Please wait five minutes before requesting another email',429);
+  const token=randomBytes(32).toString('hex'),hash=createHash('sha256').update(token).digest('hex');
+  await players.updateOne({_id:req.user._id},{$set:{emailVerifyHash:hash,emailVerifyExpiresAt:new Date(issued+60*60000),emailVerifySentAt:new Date(issued)}});
+  const url=process.env.PUBLIC_ORIGIN.replace(/\/$/,'')+'/api/auth/verify?token='+token;
+  const r=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.REMINDER_FROM_EMAIL,to:[req.user.email],subject:'Verify your Madhuban Cricket email',text:`Hello ${req.user.name},\n\nConfirm this email to receive Sunday match reminders:\n${url}\n\nLink expires in one hour. If you did not register, ignore this email.`}),signal:AbortSignal.timeout(12000)});
+  if(!r.ok)return err(res,'Email provider is unavailable',503);
+  res.json({ok:true,message:'Verification link sent. Please check your inbox.'});
+}));
+app.get('/api/auth/verify',asyncRoute(async(req,res)=>{
+  const token=String(req.query.token||'');if(!/^[a-f0-9]{64}$/.test(token))return res.status(400).type('text').send('Invalid verification token');
+  const hash=createHash('sha256').update(token).digest('hex');
+  const p=await players.findOneAndUpdate({emailVerifyHash:hash,emailVerifyExpiresAt:{$gt:now()}},{$set:{emailVerifiedAt:now()},$unset:{emailVerifyHash:'',emailVerifyExpiresAt:''}});
+  if(!p)return res.status(400).type('text').send('Verification link is invalid or expired');
+  res.redirect('/#profile');
+}));
+app.post('/api/auth/logout' ,(req,res)=>{res.clearCookie('mc_session',{path:'/'});res.json({ok:true})});
+app.get('/api/me',(req,res)=>res.json({player:publicPlayer(req.user),admin:organizer(req.user),emailReminders:!!req.user?.emailReminders,emailVerified:!!req.user?.emailVerifiedAt}));
+// Explicit organizer bootstrap — email alone is NOT sufficient (unverified user emails).
+app.post('/api/me/claim-organizer',requireAuth,authLimiter,asyncRoute(async(req,res)=>{
+  const supplied=String(req.body.code||''),expected=process.env.ADMIN_SETUP_CODE||'';
+  if(!process.env.ADMIN_EMAIL||req.user.email!==safeEmail(process.env.ADMIN_EMAIL)||expected.length<16||supplied.length!==expected.length||!timingSafeEqual(Buffer.from(supplied),Buffer.from(expected)))return err(res,'Invalid organizer activation',403);
+  await players.updateOne({_id:req.user._id},{$set:{isAdmin:true,updatedAt:now()}});
+  res.json({ok:true,admin:true});
+}));
 app.patch('/api/me',requireAuth,asyncRoute(async(req,res)=>{
   const name=clean(req.body.name,60);if(name.length<2)return err(res,'Name must have at least two characters');
   const allowedRoles=['Batter','Bowler','All-rounder','Wicketkeeper'];const batting=['Right-hand bat','Left-hand bat'];const bowling=['Right-arm fast','Right-arm medium','Right-arm off spin','Right-arm leg spin','Left-arm fast','Left-arm medium','Left-arm orthodox','Left-arm wrist spin','None'];
@@ -147,7 +173,7 @@ async function sendFixtureReminders(f,{manual=false}={}){
   for(const p of going){const member=await players.findOne({_id:oid(p.id)});if(!member)continue;
     const title=`${f.title} - match reminder`,body=`${f.date} at ${f.time} IST | ${f.venue}. Bring your kit, arrive early, and play fair.`;
     await addNotification(String(member._id),title,body,String(f._id));created++;
-    if(member.emailReminders&&process.env.RESEND_API_KEY&&process.env.REMINDER_FROM_EMAIL){
+    if(member.emailReminders&&member.emailVerifiedAt&&process.env.RESEND_API_KEY&&process.env.REMINDER_FROM_EMAIL){
       try{const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.REMINDER_FROM_EMAIL,to:[member.email],subject:title,text:`Hi ${member.name},\n\n${body}\n\nMadhuban Cricket`})});if(response.ok)sent++;else console.error('Reminder email provider returned',response.status)}catch(e){console.error('Reminder email unavailable:',e.message)}
     }
   }
@@ -182,8 +208,9 @@ app.post('/api/jarvis',requireAuth,aiLimiter,asyncRoute(async(req,res)=>{
     const json=await response.json();const answer=json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join(' ').trim();if(!answer)return err(res,'JARVIS could not answer this time',503);res.json({answer:answer.slice(0,2600)});
   }catch(e){console.error('Jarvis provider error:',e.message);err(res,'JARVIS could not connect. Try again later.',503)}
 }));
-app.get('/api/health',(_req,res)=>res.json({ok:true,app:'Madhuban Cricket',version:'2.0.0'}));
+app.get('/api/health',asyncRoute(async(_req,res)=>{await db.command({ping:1});res.json({ok:true,app:'Madhuban Cricket',version:'2.1.0',database:'connected'})}));
 const root=dirname(fileURLToPath(import.meta.url));app.use(express.static(join(root,'public'),{maxAge:'1h'}));app.get('*',(_req,res)=>res.sendFile(join(root,'public','index.html')));
 app.use((error,_req,res,_next)=>{console.error(error);err(res,'Unexpected server error',500)});
 await dbClient.connect();await Promise.all([players.createIndex({email:1},{unique:true}),matches.createIndex({updatedAt:-1}),fixtures.createIndex({date:1}),notifications.createIndex({playerId:1,createdAt:-1})]);
-app.listen(Number(process.env.PORT||3000),()=>console.log(`Madhuban Cricket v2 listening on ${process.env.PORT||3000}`));
+if(!process.env.VERCEL)app.listen(Number(process.env.PORT||3000),()=>console.log(`Madhuban Cricket v2.1 listening on ${process.env.PORT||3000}`));
+export default app;
