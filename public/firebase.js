@@ -1,4 +1,4 @@
-// Firebase web config is public, not a secret. MongoDB remains the source of match/account data.
+// Firebase web config is public, not a secret. Supabase PostgreSQL is the source of match/account data.
 // Firebase Analytics sends anonymized page events only after consent, never private player or score data.
 const firebaseConfig = {
   apiKey: "AIzaSyCD3q4BQOJ-L3Ny1z2jr8Nq8p0495PS7gc",

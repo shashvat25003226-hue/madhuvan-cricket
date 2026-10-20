@@ -5,14 +5,14 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import {MongoClient,ObjectId} from 'mongodb';
+import {createStore,isId,oid} from './lib/supabase-store.js';
 import {randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dirname,join} from 'node:path';
 import {uid,blankInnings,rollup,createDelivery,scorecard,resultText,allStats,nextSunday,balanceTeams} from './lib/cricket.js';
 
 if(!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length<32){console.error('SESSION_SECRET of at least 32 characters is required. See .env.example.');process.exit(1)}
-if(!process.env.MONGODB_URI){console.error('MONGODB_URI is required. See .env.example.');process.exit(1)}
+if(!process.env.SUPABASE_DATABASE_URL){console.error('SUPABASE_DATABASE_URL is required. See .env.example.');process.exit(1)}
 const app=express();app.set('trust proxy',1);app.disable('x-powered-by');
 app.use(helmet({contentSecurityPolicy:false,crossOriginEmbedderPolicy:false}));
 app.use(express.json({limit:'48kb'}));app.use(cookieParser());
@@ -20,10 +20,8 @@ const limiter=rateLimit({windowMs:15*60*1000,limit:150,standardHeaders:'draft-7'
 const authLimiter=rateLimit({windowMs:15*60*1000,limit:18,standardHeaders:'draft-7',legacyHeaders:false});
 const aiLimiter=rateLimit({windowMs:15*60*1000,limit:15,standardHeaders:'draft-7',legacyHeaders:false});
 app.use('/api',limiter);
-const dbClient=new MongoClient(process.env.MONGODB_URI,{maxPoolSize:8});const db=dbClient.db(process.env.MONGODB_DB||'madhuban_cricket');
-const players=db.collection('players'),matches=db.collection('matches'),fixtures=db.collection('fixtures'),notifications=db.collection('notifications');
-const isId=id=>ObjectId.isValid(id)&&String(new ObjectId(id))===id;
-const oid=id=>isId(id)?new ObjectId(id):null;
+const store=createStore(process.env.SUPABASE_DATABASE_URL);
+const {players,matches,fixtures,notifications}=store;
 const now=()=>new Date();
 const clean=(v,n=100)=>uid(v).slice(0,n);
 const safeEmail=v=>String(v??'').trim().toLowerCase().slice(0,180);
@@ -208,9 +206,10 @@ app.post('/api/jarvis',requireAuth,aiLimiter,asyncRoute(async(req,res)=>{
     const json=await response.json();const answer=json.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join(' ').trim();if(!answer)return err(res,'JARVIS could not answer this time',503);res.json({answer:answer.slice(0,2600)});
   }catch(e){console.error('Jarvis provider error:',e.message);err(res,'JARVIS could not connect. Try again later.',503)}
 }));
-app.get('/api/health',asyncRoute(async(_req,res)=>{await db.command({ping:1});res.json({ok:true,app:'Madhuban Cricket',version:'2.1.0',database:'connected'})}));
+app.get('/api/health',asyncRoute(async(_req,res)=>{await store.check();res.json({ok:true,app:'Madhuban Cricket',version:'3.0.0',database:'supabase-postgresql'})}));
 const root=dirname(fileURLToPath(import.meta.url));app.use(express.static(join(root,'public'),{maxAge:'1h'}));app.get('*',(_req,res)=>res.sendFile(join(root,'public','index.html')));
 app.use((error,_req,res,_next)=>{console.error(error);err(res,'Unexpected server error',500)});
-await dbClient.connect();await Promise.all([players.createIndex({email:1},{unique:true}),matches.createIndex({updatedAt:-1}),fixtures.createIndex({date:1}),notifications.createIndex({playerId:1,createdAt:-1})]);
-if(!process.env.VERCEL)app.listen(Number(process.env.PORT||3000),()=>console.log(`Madhuban Cricket v2.1 listening on ${process.env.PORT||3000}`));
+// Initialize PostgreSQL tables using the Supabase migration before deploying.
+// Do not require a database connection at module-import time on serverless hosts.
+if(!process.env.VERCEL)app.listen(Number(process.env.PORT||3000),()=>console.log(`Madhuban Cricket v3.0 listening on ${process.env.PORT||3000}`));
 export default app;

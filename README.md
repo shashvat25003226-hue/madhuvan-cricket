@@ -18,24 +18,24 @@
 
 ## Requirements
 
-Node.js **20+**, MongoDB Atlas, and optionally Google Gemini API and Resend. No preconfigured API keys or database passwords are committed to Git.
+Node.js **20+**, a **Supabase PostgreSQL** project with a database connection/pooler URL, and optionally Google Gemini API and Resend. No preconfigured API keys or database passwords are committed to Git.
 
 ## Start locally
 
 ```bash
 npm install
 cp .env.example .env
-# Edit .env: MONGODB_URI, SESSION_SECRET (>=32 chars), ADMIN_EMAIL, ADMIN_SETUP_CODE
+# Edit .env: SUPABASE_DATABASE_URL, SESSION_SECRET (>=32 chars), ADMIN_EMAIL, ADMIN_SETUP_CODE
 npm test
 npm run dev
 # Open http://localhost:3000
 ```
 
-The MongoDB URL belongs **only** in the server's `.env` or host environment secrets. Use `MONGODB_DB=madhuban_cricket` to keep club data separate. MongoDB user needs readWrite on that database. Set a strong `SESSION_SECRET`, `ADMIN_EMAIL`, and `ADMIN_SETUP_CODE` before activating an organizer. An organizer must sign up using the exact ADMIN_EMAIL **and** explicitly activate the profile with the secret ADMIN_SETUP_CODE (at least 16 characters); a matching email alone never grants privileges. Email verification is available when Resend is configured, and opt-in email reminders require verification.
+The `SUPABASE_DATABASE_URL` must be kept **only** on the server (Vercel encrypted environment variable or local untracked `.env`). Use the Supabase **Transaction Pooler** PostgreSQL connection string (port 6543), with its database password correctly URL-encoded. This backend uses `pg` directly, not the public Firebase configuration or a client-side Supabase anon key. Before starting the app, apply the SQL migration in `supabase/migrations/20261020_madhuban_cricket.sql` to create four isolated `mc_*` tables with database-enforced email uniqueness and row-level security. The database owns all state; Firebase is optional Analytics only. Set a strong `SESSION_SECRET`, `ADMIN_EMAIL`, and `ADMIN_SETUP_CODE` before activating an organizer. An organizer must sign up using the exact ADMIN_EMAIL **and** explicitly activate the profile with the secret ADMIN_SETUP_CODE (at least 16 characters); a matching email alone never grants privileges. Email verification is available when Resend is configured, and opt-in email reminders require verification.
 
 ## Deploy to Node hosting (Render, Railway, VPS etc.)
 
-Create a **Node web service** with this repository, build command `npm install`, start command `npm start`, and Node 20+. Set `MONGODB_URI`, `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_SETUP_CODE`, `PUBLIC_ORIGIN=https://your-host`, `NODE_ENV=production`, and optionally `GEMINI_API_KEY` / `RESEND_API_KEY` / `REMINDER_FROM_EMAIL` / `CRON_SECRET`. Add your host's outbound IP to Atlas Network Access, preferably narrowly scoped. TLS/HTTPS is required for secure session cookies.
+Create a **Node web service** with this repository, build command `npm install`, start command `npm start`, and Node 20+. Set `SUPABASE_DATABASE_URL`, `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_SETUP_CODE`, `PUBLIC_ORIGIN=https://your-host`, `NODE_ENV=production`, and optionally `GEMINI_API_KEY` / `RESEND_API_KEY` / `REMINDER_FROM_EMAIL` / `CRON_SECRET`. Use the Supabase connection pooler with TLS and keep the database password server-side. TLS/HTTPS is required for secure session cookies.
 
 ### Recurring Sunday fixture + reminder automation
 
@@ -59,7 +59,7 @@ Set `GEMINI_API_KEY` in your server environment, optionally `GEMINI_MODEL` (defa
 - Password resets, photo uploads, video highlights, push notifications and payment functionality are not included in this release.
 - **Email reminders** require Resend setup, player opt-in, and successful email verification before sending.
 - **No WhatsApp auto-messages:** the button opens a share composer; sending is a user action.
-- MongoDB credentials, Gemini key and email service secrets must never be committed. Keep `.env` ignored.
+- Supabase database passwords, Gemini key and email service secrets must never be committed. Keep `.env` ignored.
 
 ## Verify
 
@@ -79,8 +79,21 @@ Madhuban is a mobile-first installable Progressive Web App (not a native App Sto
 
 ## Firebase
 
-`public/firebase.js` uses the provided Firebase project config for **optional Google Analytics**, after player consent. Firebase public configuration is not a server-side secret. MongoDB remains the source of truth for accounts, matches and statistics; Firebase Auth, Firestore, Firebase Cloud Messaging and App Check are **not configured**. The analytics opt-in control is in the footer.
+`public/firebase.js` uses the provided Firebase project config for **optional Google Analytics**, after player consent. Firebase public configuration is not a server-side secret. Supabase PostgreSQL is the source of truth for accounts, matches and statistics; Firebase Auth, Firestore, Firebase Cloud Messaging and App Check are **not configured**. The analytics opt-in control is in the footer.
 
 ## Club culture
 
 The homepage and footer thank the cricketers, friends and coaches who made childhood memorable, and include original motivational quotes. Developer credit **Swastik Shukla**, Instagram [@swastik_shukla__](https://www.instagram.com/swastik_shukla__/), and the [Madhuban WhatsApp group](https://chat.whatsapp.com/HNSGDgdGJVJGFnXEQfQNNk) are linked. Reference photographs from external fan edits are **not republished** without image rights.
+
+
+## PostgreSQL migration and production cutover (3.0)
+
+The application is now implemented against **Supabase PostgreSQL**, not MongoDB. Routes, scoring logic, cookies, player profiles, leaderboards, fixtures and notifications are preserved. The SQL database migration is in `supabase/migrations/20261020_madhuban_cricket.sql`. **Do not deploy the 3.0 backend to production until your Supabase project is connected and the migration has been applied.**
+
+1. In Supabase SQL Editor run the migration (or use Supabase CLI migrations with an authorized connection). It creates isolated `public.mc_players`, `public.mc_matches`, `public.mc_fixtures`, `public.mc_notifications` and supporting indexes. RLS is enabled and anonymous client roles are denied access; all reads/writes flow through the authenticated Node backend.
+2. In Supabase **Connect** → choose the **transaction pooler** PostgreSQL connection string and database password. Save it as the Vercel encrypted environment variable `SUPABASE_DATABASE_URL` for the production deployment. Never commit this URL. Some IPv4/IPv6 networking setups require the pooler instead of a direct database hostname.
+3. Keep Vercel `SESSION_SECRET` unchanged if you want existing login cookies to remain valid. Set `ADMIN_EMAIL` and a secret `ADMIN_SETUP_CODE` if you want organizer controls. Retain `PUBLIC_ORIGIN=https://madhuvan-cricket.vercel.app`.
+4. Redeploy the linked GitHub branch and confirm `GET /api/health` returns `database: supabase-postgresql`. Test registration, login, profile update, fixtures, and end-to-end scoring in a browser before pointing production to it.
+5. Remove the legacy `MONGODB_URI`/`MONGODB_DB` from Vercel **only after** the Supabase rollout is verified. No migration of old data was needed when checked: the four dedicated MongoDB collections were empty. If new club data was entered since that check, export and migrate before cutting over.
+
+**Note:** This app keeps its own bcrypt/JWT account system with session cookies, storing accounts in Supabase PostgreSQL. It does not use Supabase Auth and does not expose any Supabase private keys to browsers.
