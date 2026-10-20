@@ -1,0 +1,22 @@
+name: Madhuban Sunday fixtures and reminders
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * *' # 13:30 Asia/Kolkata daily
+permissions: {}
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Request authorized scheduler tick
+        env:
+          BASE_URL: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE_URL" || -z "$CRON_SECRET" ]]; then echo 'Configure APP_BASE_URL and CRON_SECRET in repository secrets.' >&2; exit 1; fi
+          curl --fail-with-body --show-error --silent --max-time 45 --retry 2 \
+            -X POST "${BASE_URL%/}/api/cron/tick" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H 'Content-Type: application/json'
